@@ -1,63 +1,64 @@
 const express = require("express");
+const http = require("http");
+const WebSocket = require("ws");
 const cors = require("cors");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-let systemOnline = false;
-let devices = {
-  light1: false,
-  fan: false,
-  light2: false,
-  light3: false
+let deviceState = {
+  light1: "off",
+  fan: "off",
+  light2: "off",
+  light3: "off"
 };
 
-// --------------------------
-// CHECK SYSTEM ONLINE/OFFLINE
-// --------------------------
 app.get("/status", (req, res) => {
-  res.json({ online: systemOnline });
+  res.json({ online: true, devices: deviceState });
 });
 
-// ESP32 sends online ping
-app.get("/ping", (req, res) => {
-  systemOnline = true;
-  console.log("ESP32 ONLINE");
-  res.send("pong");
+// -------------------------------------------------------
+// WEBSOCKET SERVER
+// -------------------------------------------------------
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+wss.on("connection", (ws) => {
+  console.log("🔌 Device Connected");
+
+  // Send current state to newly connected devices
+  ws.send(JSON.stringify({
+    type: "init",
+    devices: deviceState
+  }));
+
+  ws.on("message", (msg) => {
+    console.log("Received:", msg);
+
+    try {
+      const data = JSON.parse(msg);
+
+      if (data.type === "set") {
+        deviceState[data.device] = data.state;
+
+        // Broadcast to ALL connected clients (React + ESP)
+        wss.clients.forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+              type: "update",
+              device: data.device,
+              state: data.state
+            }));
+          }
+        });
+      }
+    } catch (e) {
+      console.log("Invalid JSON");
+    }
+  });
 });
 
-// --------------------------
-// DEVICE ON/OFF ENDPOINTS
-// --------------------------
-app.get("/:device/on", (req, res) => {
-  const device = req.params.device;
-
-  if (devices[device] !== undefined) {
-    devices[device] = true;
-    console.log(device + " turned ON");
-    res.json({ device, state: true });
-  } else {
-    res.status(404).json({ error: "Device not found" });
-  }
-});
-
-app.get("/:device/off", (req, res) => {
-  const device = req.params.device;
-
-  if (devices[device] !== undefined) {
-    devices[device] = false;
-    console.log(device + " turned OFF");
-    res.json({ device, state: false });
-  } else {
-    res.status(404).json({ error: "Device not found" });
-  }
-});
-
-// --------------------------
-// START SERVER
-// --------------------------
-const port = process.env.PORT || 5000;
-app.listen(port, () => {
-  console.log("Backend running on port", port);
+server.listen(10000, () => {
+  console.log("Server running on port 10000");
 });
