@@ -7,58 +7,112 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// -------------------------------------------------------
+// DEVICE STATES
+// -------------------------------------------------------
 let deviceState = {
-  light1: "off",
-  fan: "off",
-  light2: "off",
-  light3: "off"
+  light1: false,
+  fan: false,
+  light2: false,
+  light3: false
 };
 
+// -------------------------------------------------------
+// HTTP STATUS CHECK
+// -------------------------------------------------------
 app.get("/status", (req, res) => {
-  res.json({ online: true, devices: deviceState });
+  res.json({ online: true });
 });
 
 // -------------------------------------------------------
-// WEBSOCKET SERVER
+// ESP8266 – POLLS STATE
+// -------------------------------------------------------
+app.get("/state", (req, res) => {
+  res.json(deviceState);
+});
+
+// -------------------------------------------------------
+// HTTP ON/OFF CONTROL (used by React buttons)
+// -------------------------------------------------------
+app.get("/:id/on", (req, res) => {
+  const id = req.params.id;
+  if (deviceState[id] === undefined)
+    return res.json({ success: false, error: "Invalid ID" });
+
+  deviceState[id] = true;
+
+  broadcast({
+    type: "update",
+    device: id,
+    state: true
+  });
+
+  res.json({ success: true, state: deviceState });
+});
+
+app.get("/:id/off", (req, res) => {
+  const id = req.params.id;
+  if (deviceState[id] === undefined)
+    return res.json({ success: false, error: "Invalid ID" });
+
+  deviceState[id] = false;
+
+  broadcast({
+    type: "update",
+    device: id,
+    state: false
+  });
+
+  res.json({ success: true, state: deviceState });
+});
+
+// -------------------------------------------------------
+// WEBSOCKET SERVER (React Live Updates + ESP later)
 // -------------------------------------------------------
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-wss.on("connection", (ws) => {
-  console.log("🔌 Device Connected");
+// Broadcast function for WS clients
+function broadcast(data) {
+  const msg = JSON.stringify(data);
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(msg);
+    }
+  });
+}
 
-  // Send current state to newly connected devices
+wss.on("connection", (ws) => {
+  console.log("🔌 WebSocket Client Connected");
+
+  // Send current state on connect
   ws.send(JSON.stringify({
     type: "init",
     devices: deviceState
   }));
 
+  // Handle incoming WS messages
   ws.on("message", (msg) => {
-    console.log("Received:", msg);
-
     try {
       const data = JSON.parse(msg);
 
       if (data.type === "set") {
         deviceState[data.device] = data.state;
 
-        // Broadcast to ALL connected clients (React + ESP)
-        wss.clients.forEach(client => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: "update",
-              device: data.device,
-              state: data.state
-            }));
-          }
+        broadcast({
+          type: "update",
+          device: data.device,
+          state: data.state
         });
       }
     } catch (e) {
-      console.log("Invalid JSON");
+      console.log("❌ Invalid JSON");
     }
   });
 });
 
-server.listen(10000, () => {
-  console.log("Server running on port 10000");
+// -------------------------------------------------------
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
+  console.log("🚀 Server running on port", PORT);
 });
